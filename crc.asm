@@ -7,7 +7,7 @@ SYS_READ equ 0
 SYS_WRITE equ 1
 SYS_EXIT equ 60
 
-BUFFER_SIZE equ 1024
+BUFFER_SIZE equ 8
 
 section .data
     arg1_msg db 'File: ', 0
@@ -18,6 +18,12 @@ section .data
 section .bss
     fd resq 1
     buffer resb BUFFER_SIZE
+    buffer_pointer resb 1
+    data_counter resw 1
+    data_len resw 1
+    
+
+    
 
 section .text
     global _start
@@ -79,12 +85,8 @@ opening_file:
     mov [fd], rax
 
 processing_file:
-    ; Read from the file
-    mov rax, SYS_READ                          ; sys_read
-    mov rdi, [fd]                       ; file descriptor
-    mov rsi, buffer                     ; buffer to read into
-    mov rdx, BUFFER_SIZE                       ; maximum number of bytes to read
-    syscall
+
+	call get_next_buffer
 
     ; Print the content of the file
     mov rsi, buffer                     ; pointer to input buffer
@@ -124,3 +126,20 @@ print_string:
     mov rdi, 1              ; file descriptor (stdout)
     syscall                 ; call kernel
     ret                     ; Return from function
+
+get_next_buffer:
+    ; Read from the file
+    mov rax, SYS_READ                          ; sys_read
+    mov rdi, [fd]                       ; file descriptor
+    mov rsi, buffer                     ; buffer to read into
+    mov rdx, BUFFER_SIZE                       ; maximum number of bytes to read
+    syscall
+    ret
+
+read_segment:
+	mov word [data_len], word [buffer] 
+	mov byte [buffer_pointer], 2
+	mov gowno
+
+
+
