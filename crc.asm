@@ -1,3 +1,5 @@
+%include "macro_print.asm"
+
 SYS_OPEN equ 2
 READ_ONLY equ 0
 MODE equ 0
@@ -6,6 +8,8 @@ SYS_CLOSE equ 3
 SYS_READ equ 0
 SYS_WRITE equ 1
 SYS_EXIT equ 60
+SYS_LSEEK equ 8
+LSEEK_CUR equ 1
 
 BUFFER_SIZE equ 8
 
@@ -18,9 +22,10 @@ section .data
 section .bss
     fd resq 1
     buffer resb BUFFER_SIZE
-    buffer_pointer resb 1
-    data_counter resw 1
-    data_len resw 1
+    buffer_pointer resb 1 ; byte
+    data_counter resw 1 ; word - 2 bytes
+    data_len resw 1 ; word - 2 bytes
+    segment_offset resd 1 ; doubleword - 4 bytes
     
 
     
@@ -86,11 +91,8 @@ opening_file:
 
 processing_file:
 
-	call get_next_buffer
-
-    ; Print the content of the file
-    mov rsi, buffer                     ; pointer to input buffer
-    call print_string                   ; print the file content
+	; only ret here once its over
+    call read_data_len 
 
 closing_file:
     ; Close the file
@@ -136,10 +138,86 @@ get_next_buffer:
     syscall
     ret
 
-read_segment:
-	mov word [data_len], word [buffer] 
-	mov byte [buffer_pointer], 2
-	mov gowno
+; read_segment:
+; 	mov word [data_len], word [buffer] 
+; 	mov byte [buffer_pointer], 2
+; 	mov gowno
 
+; r8 - iterating over curr segment
+read_data_len:
+    mov rax, SYS_READ
+    mov rdi, [fd]
+    mov rsi, data_len
+    mov rdx, 2 ; length is a word - 2 bytes
+    syscall
+    ; TODO add checking for fails
+    ; now in word [data_len] we have the number of bytes in curr segment
 
+    cmp rax, 0
+    jl _error
+
+    xor rax, rax
+    mov ax, word [data_len]
+    print "length: ", rax
+
+    xor r8w, r8w ; only operating on lowest 16 bits
+.processing_data_loop_condition:
+    cmp r8w, word [data_len]
+    je .reading_offset
+.processing_data_loop_body:
+    ; buffer := curent byte
+    mov rax, SYS_READ
+    mov rdi, [fd]
+    mov rsi, buffer ; TODO push from the back 
+    mov rdx, 1 ; process only one byte at once - endian order...
+    syscall
+
+    ; todo error doesnt stop???
+    cmp rax, 0
+    jl _error
+
+    ; print buffer
+    xor rax, rax
+    mov al , byte [buffer]
+    print "Read: ", rax
+
+    ; i++ next iteration
+    inc r8w
+    jmp read_data_len.processing_data_loop_condition
+.reading_offset:
+    ; TODO optimize syscall args
+    mov rax, SYS_READ
+    mov rdi, [fd]
+    mov rsi, segment_offset
+    mov rdx, 4 ; offset is a 32bit U2 number
+    syscall 
+
+    cmp rax, 0
+    jl _error
+
+    movsxd rsi, dword [segment_offset]
+    print "offset: ", rsi
+
+    ; rdx := total length of curr segment
+    xor edx, edx ; rdx := 0
+    mov dx, word [data_len] ; rdx := data_len
+    add rdx, 6 ; rdx += 2 (length) + 4 (offset)
+    ;checking if it points to itself
+    add rsi, rdx
+    cmp rsi, 0
+    jne .moving_to_next_segment
+    ret ; if equal then we go back to print the result close the file etc.
+.moving_to_next_segment:
+    mov rax, SYS_LSEEK
+    mov rdi, [fd]
+    sub rsi, rdx ; rsi := offset
+    mov rdx, LSEEK_CUR ; moving relative to current cursor 
+    syscall
+
+    print "error: ", rax
+    cmp rax, 0
+    jl _error
+
+    jmp read_data_len
+    
 
