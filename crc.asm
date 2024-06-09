@@ -1,5 +1,6 @@
 %include "macro_print.asm"
 
+LAST_BYTE equ -1
 SYS_OPEN equ 2
 READ_ONLY equ 0
 MODE equ 0
@@ -22,6 +23,7 @@ section .data
 section .bss
     fd resq 1
     buffer resb BUFFER_SIZE
+    small_buffer resb 1
     buffer_pointer resb 1 ; byte
     data_counter resw 1 ; word - 2 bytes
     data_len resw 1 ; word - 2 bytes
@@ -92,7 +94,7 @@ opening_file:
 processing_file:
 
 	; only ret here once its over
-    call read_data_len 
+    call fetching_test
 
 closing_file:
     ; Close the file
@@ -143,7 +145,7 @@ get_next_buffer:
 ; 	mov byte [buffer_pointer], 2
 ; 	mov gowno
 
-; r8 - iterating over curr segment
+; reads following two bytes and saves them to data_len
 read_data_len:
     mov rax, SYS_READ
     mov rdi, [fd]
@@ -160,30 +162,35 @@ read_data_len:
     mov ax, word [data_len]
     print "length: ", rax
 
-    xor r8w, r8w ; only operating on lowest 16 bits
-.processing_data_loop_condition:
-    cmp r8w, word [data_len]
-    je .reading_offset
-.processing_data_loop_body:
-    ; buffer := curent byte
+    xor eax, eax
+    ret ; we return 0 because there are bytes in current segment
+
+; fetches next byte to a small buffer
+; if it was the last byte then rax is set to -1 = LAST_BYTE
+; otherwise to 0
+fetch_next_byte:
+    ; small_buffer := curent byte
     mov rax, SYS_READ
     mov rdi, [fd]
-    mov rsi, buffer ; TODO push from the back 
+    mov rsi, small_buffer ; TODO push from the back 
     mov rdx, 1 ; process only one byte at once - endian order...
     syscall
 
-    ; todo error doesnt stop???
     cmp rax, 0
     jl _error
 
     ; print buffer
     xor rax, rax
-    mov al , byte [buffer]
+    mov al , byte [small_buffer]
     print "Read: ", rax
 
-    ; i++ next iteration
-    inc r8w
-    jmp read_data_len.processing_data_loop_condition
+    mov ax, word [data_counter]
+    inc ax
+    mov word [data_counter], ax
+    cmp ax, word [data_len]
+    je .reading_offset
+    xor eax, eax ; there is more data in the current segment
+    ret ; so we return 0
 .reading_offset:
     ; TODO optimize syscall args
     mov rax, SYS_READ
@@ -206,7 +213,8 @@ read_data_len:
     add rsi, rdx
     cmp rsi, 0
     jne .moving_to_next_segment
-    ret ; if equal then we go back to print the result close the file etc.
+    mov rax, LAST_BYTE
+    ret ; return LAST_BYTE
 .moving_to_next_segment:
     mov rax, SYS_LSEEK
     mov rdi, [fd]
@@ -214,10 +222,19 @@ read_data_len:
     mov rdx, LSEEK_CUR ; moving relative to current cursor 
     syscall
 
-    print "error: ", rax
     cmp rax, 0
     jl _error
 
     jmp read_data_len
     
 
+fetching_test:
+    call read_data_len
+.crawling_condition:
+    cmp rax, LAST_BYTE
+    je .after_file
+.crawling_loop_body:
+    call fetch_next_byte
+    jmp .crawling_condition
+.after_file:
+    ret
