@@ -13,6 +13,7 @@ SYS_LSEEK equ 8
 LSEEK_CUR equ 1
 
 BUFFER_SIZE equ 8
+SHIFT_FROM_THE_YOUNGEST_TO_THE_OLDEST_EIGHT_BITS equ 56
 
 section .data
     arg1_msg db 'File: ', 0
@@ -29,6 +30,8 @@ section .bss
     data_len resw 1 ; word - 2 bytes
     segment_offset resd 1 ; doubleword - 4 bytes
     result_length resb 1 ; polylength-1
+    bytes_in_buffer resb 1 ; when hits 0 well have the reslt
+    poly resq 1
     
 
     
@@ -96,6 +99,14 @@ processing_file:
 
 	; only ret here once its over
     ; call fetching_test
+    ;mov qword [poly], 0b1
+    ;shl qword [poly], 63
+    ;mov qword [poly], 0b11
+    ;shl qword [poly], 61 ; correctry came out as 4 = 0b0100
+    mov qword [poly], 0b11010101
+    shl qword [poly], 56 ; correctly passes with 57 = 0101 0111
+    mov rax, [poly]
+    print "poly: ", rax
     call filling_initial_buffer
 
 closing_file:
@@ -252,17 +263,52 @@ filling_initial_buffer:
     cmp rax, LAST_BYTE
     je .after_loop
 .loop_body:
-    call fetch_next_byte
+    call fetch_next_byte ; rax has to be unchanged until the xor loop
     mov dl, byte [small_buffer] ; RDX!!
     mov byte [buffer + r8], dl
+    inc byte [bytes_in_buffer] ; adding a byte
     dec r8
     jmp .condition
 .after_loop:
     jmp xoring_loop
 
+; rbx!!!
 xoring_loop:
-    mov rdx, qword [buffer]
-    print "buffer: ", rdx
+    mov r9, qword [buffer]
+.loop_unprocessed_bits_condition:
+    cmp byte [bytes_in_buffer], 0
+    je .after_loop
+.loop_outer_body:
+    dec byte [bytes_in_buffer]
+    xor ebx, ebx ; next byte 0 by default
+    cmp rax, LAST_BYTE  ; make sure rax unchanged or move regs
+    je .inner_loop_setup ; if no more data then we leave zero
+    call fetch_next_byte
+    mov bl, byte [small_buffer]
+    shl rbx, SHIFT_FROM_THE_YOUNGEST_TO_THE_OLDEST_EIGHT_BITS ; bytes from small buffer now are the oldest in rbx
+    inc byte [bytes_in_buffer]
+.inner_loop_setup:
+    mov r8, 0
+.inner_loop_condition:
+    cmp r8, 8
+    je .loop_unprocessed_bits_condition
+.inner_loop_body:
+    mov rcx, rbx
+    shl rbx, 1 ; ugly
+    shld r9, rcx, 1 ; we shift off the first bit and on the last
+    ; now if the carry flag is set we popped a 1 from the left
+    ; it corresponds to the implied highest degree of poly so we xor
+    ; otherwise we skip iteration
+    jc .can_proceed_with_xor
+    jmp .inner_loop_lower_body
+.can_proceed_with_xor:
+    xor r9, qword [poly]
+.inner_loop_lower_body:
+    ;print "content of r9: ", r9
+    inc r8
+    jmp .inner_loop_condition
+.after_loop:
+    print "result in hex: ", r9
     ret
 
     ; TODO: parse polynomial
