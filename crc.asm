@@ -28,6 +28,7 @@ section .bss
     data_counter resw 1 ; word - 2 bytes
     data_len resw 1 ; word - 2 bytes
     segment_offset resd 1 ; doubleword - 4 bytes
+    result_length resb 1 ; polylength-1
     
 
     
@@ -94,7 +95,8 @@ opening_file:
 processing_file:
 
 	; only ret here once its over
-    call fetching_test
+    ; call fetching_test
+    call filling_initial_buffer
 
 closing_file:
     ; Close the file
@@ -131,19 +133,6 @@ print_string:
     syscall                 ; call kernel
     ret                     ; Return from function
 
-get_next_buffer:
-    ; Read from the file
-    mov rax, SYS_READ                          ; sys_read
-    mov rdi, [fd]                       ; file descriptor
-    mov rsi, buffer                     ; buffer to read into
-    mov rdx, BUFFER_SIZE                       ; maximum number of bytes to read
-    syscall
-    ret
-
-; read_segment:
-; 	mov word [data_len], word [buffer] 
-; 	mov byte [buffer_pointer], 2
-; 	mov gowno
 
 ; reads following two bytes and saves them to data_len
 read_data_len:
@@ -165,11 +154,19 @@ read_data_len:
     xor eax, eax
     mov word [data_counter], ax ; bytes read in curr segment - 0
 
+    cmp word [data_len], 0
+    jne .end
+    mov rax, LAST_BYTE ; if no bytes in current segment we want to return last byte
+
+.end:
     ret ; we return 0 because there are bytes in current segment
 
 ; fetches next byte to a small buffer
 ; if it was the last byte then rax is set to -1 = LAST_BYTE
 ; otherwise to 0
+; TODO change logic to allow zero length segments
+; read data len should set LAST_BYTE if necessary
+; and condition should be moved to the top
 fetch_next_byte:
     ; small_buffer := curent byte
     mov rax, SYS_READ
@@ -241,4 +238,29 @@ fetching_test:
     print "read: ", rdx
     jmp .crawling_condition
 .after_file:
+    ret
+
+; RDX MODIFIED!!!!!!!!
+filling_initial_buffer:
+    call read_data_len ; zeros rax
+    ; r8 <- [7, 0]
+    ; iterating while has next byte and space in (big) buffer
+    mov r8, 7
+.condition:
+    cmp r8, 0
+    je .after_loop
+    cmp rax, LAST_BYTE
+    je .after_loop
+.loop_body:
+    call fetch_next_byte
+    mov dl, byte [small_buffer] ; RDX!!
+    mov byte [buffer + r8], dl
+    dec r8
+    jmp .condition
+.after_loop:
+    jmp xoring_loop
+
+xoring_loop:
+    mov rdx, qword [buffer]
+    print "buffer: ", rdx
     ret
