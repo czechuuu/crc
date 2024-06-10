@@ -1,5 +1,3 @@
-%include "macro_print.asm"
-
 LAST_BYTE equ -1
 SYS_OPEN equ 2
 READ_ONLY equ 0
@@ -17,25 +15,18 @@ BUFFER_SIZE equ 8
 SHIFT_FROM_THE_YOUNGEST_TO_THE_OLDEST_EIGHT_BITS equ 56
 NEWLINE equ 10
 
-section .data
-    arg1_msg db 'File: ', 0
-    arg2_msg db 'Polynomial: ', 0
-    error_msg db 'Error', 10, 0
-    newline db 10, 0
 
 section .bss
     fd resq 1
     buffer resb BUFFER_SIZE
     small_buffer resb 1
-    buffer_pointer resb 1 ; byte
+    print_buffer resb 66
     data_counter resw 1 ; word - 2 bytes
     data_len resw 1 ; word - 2 bytes
     segment_offset resd 1 ; doubleword - 4 bytes
-    result_length resb 1 ; polylength-1
     bytes_in_buffer resb 1 ; when hits 0 well have the reslt
     poly resq 1
     poly_length resb 1
-    print_buffer resb 66
     
 
     
@@ -43,21 +34,6 @@ section .bss
 section .text
     global _start
 
-%macro PRINT_STRING 1
-    ; Calculate the length of the string
-    mov rsi, %1             ; string pointer
-    xor rdx, rdx            ; reset length counter
-%%len_calc:
-    cmp byte [rsi + rdx], 0 ; check for null terminator
-    je %%print               ; if null, we are done
-    inc rdx                 ; increment length counter
-    jmp %%len_calc           ; repeat
-%%print:
-    mov rax, 1              ; sys_write
-    mov rdi, 1              ; file descriptor (stdout)
-    mov rsi, %1             ; string pointer
-    syscall                 ; call kernel
-%endmacro
 
 _start:
 processing_parameters:
@@ -105,22 +81,6 @@ _not_closing_error:
     mov rdi, 1              ; exit code 1
     syscall                 ; call kernel
 
-; MESSES WITH ALL CALLER SAVED REGS
-; Prints a string (null terminated) 
-; rsi - pointer to the string
-print_string:
-    mov rdx, 0              ; Reset length counter
-.count:
-    cmp byte [rsi + rdx], 0 ; Compare current byte to NULL
-    je .done                ; If NULL, we are done
-    inc rdx                 ; Increment length counter
-    jmp .count              ; Repeat
-.done:
-    mov rax, SYS_WRITE              ; sys_write
-    mov rdi, 1              ; file descriptor (stdout)
-    syscall                 ; call kernel
-    ret                     ; Return from function
-
 
 ; reads following two bytes and saves them to data_len
 read_data_len:
@@ -134,7 +94,7 @@ read_data_len:
     jl _error
 
     ; if the segment has 0 data we immedietaly seek the next one
-    xor rax, rax
+    xor eax, eax
     mov ax, word [data_len]
     cmp ax, 0
     je reading_offset
@@ -142,7 +102,6 @@ read_data_len:
     xor eax, eax
     mov word [data_counter], ax ; bytes read in curr segment - 0
 
-    ; !!! what the hell was this code??
     ret ; we return 0 because there are bytes in current segment
 
 ; fetches next byte to a small buffer
