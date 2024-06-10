@@ -3,6 +3,7 @@
 LAST_BYTE equ -1
 SYS_OPEN equ 2
 READ_ONLY equ 0
+STDOUT equ 1
 MODE equ 0
 
 SYS_CLOSE equ 3
@@ -32,6 +33,8 @@ section .bss
     result_length resb 1 ; polylength-1
     bytes_in_buffer resb 1 ; when hits 0 well have the reslt
     poly resq 1
+    poly_length resb 1
+    print_buffer resb 66
     
 
     
@@ -79,6 +82,13 @@ printing_parameters:
     mov rsi, [rsp + 24]     ; pointer to second argument (argv[2])
     call print_string       ; print the second argument
 
+    PRINT_STRING newline
+
+    ;mov rdx, [rsp + 24]
+    call parse_poly
+    ;mov rax, [poly]
+    ;print "poly parse: ", rax
+
     ; Print newline
     PRINT_STRING newline
 
@@ -103,11 +113,13 @@ processing_file:
     ;shl qword [poly], 63
     ;mov qword [poly], 0b11
     ;shl qword [poly], 61 ; correctry came out as 4 = 0b0100
-    mov qword [poly], 0b11010101
-    shl qword [poly], 56 ; correctly passes with 57 = 0101 0111
+    ; mov qword [poly], 0b11010101
+    ;shl qword [poly], 56 ; correctly passes with 57 = 0101 0111
     mov rax, [poly]
     print "poly: ", rax
     call filling_initial_buffer
+    print "brat: ", r9
+    call print_poly_result
 
 closing_file:
     ; Close the file
@@ -160,6 +172,8 @@ read_data_len:
 
     xor rax, rax
     mov ax, word [data_len]
+    cmp ax, 0
+    je reading_offset
     ; print "length: ", rax
 
     xor eax, eax
@@ -198,10 +212,11 @@ fetch_next_byte:
     inc ax
     mov word [data_counter], ax
     cmp ax, word [data_len]
-    je .reading_offset
+    je reading_offset
     xor eax, eax ; there is more data in the current segment
     ret ; so we return 0
-.reading_offset:
+
+reading_offset:
     ; TODO optimize syscall args
     mov rax, SYS_READ
     mov rdi, [fd]
@@ -311,8 +326,91 @@ xoring_loop:
     print "result in hex: ", r9
     ret
 
+
+parse_poly:
+    mov rdx, [rsp + 32]               ; rcx = pointer to the string
+    mov al, [rdx]              ; Load first character of the string into al
+    test al, al                ; Check if it's the null terminator
+    jz _error                  ; If it is, jump to _error
+
+    ; Find the length of the string
+    xor ecx, ecx
+find_length:
+    mov al, [rdx + rcx]        ; Load current character into al
+    test al, al                ; Check if it's the null terminator
+    jz process_string          ; If it is, start processing the string
+    inc rcx                    ; Increment counter
+    jmp find_length            ; Loop back to find length
+
+process_string:
+    mov [poly_length], cl
+    dec rcx                    ; rdi now points to the last character of the string
+
+process_char:
+    mov al, [rdx + rcx]        ; Load the current character into al
+    cmp al, '0'                ; Compare the character with '0'
+    je store_zero_bit          ; If it's '0', store zero bit
+
+    cmp al, '1'                ; Compare the character with '1'
+    je store_one_bit           ; If it's '1', store one bit
+
+    jmp _error                 ; If it's neither '0' nor '1', jump to _error
+
+
+store_one_bit:
+    ; Shift poly left by 1 bit and set the LSB
+    mov rax, 1
+    shl rax, 63
+    shr rax, cl
+    or qword [poly], rax
+    jmp check_done
+
+store_zero_bit:
+    ; do nothign
+
+check_done:
+    dec rcx                    ; Move to the previous character
+    js done                    ; If we've processed all characters, we're done
+    jmp process_char           ; Loop back to process the next character
+
+done: 
+    ret
     ; TODO: parse polynomial
-    ; moving fetch next logic to the top to allow 0 segments
-    ; xoring loop: knowing when data ends
-    ; xoring downloading next byte: should be easy
-    ; xoring general logic
+    ; TODO: print result
+    ; allowing empty segments by checking directly after reading lenght - seems ok
+
+
+; assumes result in r9 
+; will go through the input string and now to end from there
+print_poly_result:
+    mov rcx, [poly_length]                   ; rcx = poly_length (number of bits to write)
+    lea rsi, [buffer]              ; rsi = address of buffer
+    xor rdi, rdi                   ; rdi = index in buffer
+
+write_bits:
+    ; Get the most significant bit of r9
+    mov rbx, r9
+    shr rbx, 63                    ; Shift right to get the most significant bit
+    add rbx, '0'                   ; Convert bit to ASCII ('0' or '1')
+    mov byte [rsi + rdi], bl            ; Store the character in the buffer
+    inc rdi                        ; Move to the next buffer position
+
+    ; Shift r9 left by 1 to process the next bit
+    shl r9, 1
+
+    ; Decrement the bit counter
+    dec rcx
+    jnz write_bits                 ; Repeat until all bits are processed
+
+    mov byte [rsi + rdi], 10
+    inc rdi
+    mov byte [rsi + rdi], 0
+
+
+    ; Write the buffer to stdout
+    mov rax, SYS_WRITE                     ; syscall: write
+    mov rdx, rdi                   ; number of bytes to write
+    mov rdi, STDOUT                     ; file descriptor: stdout
+    lea rsi, [buffer]              ; buffer to write
+    syscall
+    ret
