@@ -160,9 +160,11 @@ read_data_len:
 
     xor rax, rax
     mov ax, word [data_len]
-    print "length: ", rax
+    ; print "length: ", rax
 
     xor eax, eax
+    mov word [data_counter], ax ; bytes read in curr segment - 0
+
     ret ; we return 0 because there are bytes in current segment
 
 ; fetches next byte to a small buffer
@@ -182,7 +184,7 @@ fetch_next_byte:
     ; print buffer
     xor rax, rax
     mov al , byte [small_buffer]
-    print "Read: ", rax
+    ; print "Read: ", rax
 
     mov ax, word [data_counter]
     inc ax
@@ -203,7 +205,7 @@ fetch_next_byte:
     jl _error
 
     movsxd rsi, dword [segment_offset]
-    print "offset: ", rsi
+    ; print "offset: ", rsi
 
     ; rdx := total length of curr segment
     xor edx, edx ; rdx := 0
@@ -235,6 +237,8 @@ fetching_test:
     je .after_file
 .crawling_loop_body:
     call fetch_next_byte
+    mov dl, byte [small_buffer]
+    print "read: ", rdx
     jmp .crawling_condition
 .after_file:
     ret
