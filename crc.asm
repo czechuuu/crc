@@ -248,7 +248,7 @@ filling_initial_buffer:
     mov r8, 7
 .condition:
     cmp r8, 0
-    je .after_loop
+    jl .after_loop
     cmp rax, LAST_BYTE
     je .after_loop
 .loop_body:
@@ -264,3 +264,9 @@ xoring_loop:
     mov rdx, qword [buffer]
     print "buffer: ", rdx
     ret
+
+    ; TODO: parse polynomial
+    ; moving fetch next logic to the top to allow 0 segments
+    ; xoring loop: knowing when data ends
+    ; xoring downloading next byte: should be easy
+    ; xoring general logic
