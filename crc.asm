@@ -1,5 +1,13 @@
-;%include "macro_print.asm"
-; remove macro !!!!
+; CRC - 3 projekt zaliczeniowy AKSO
+; MIMUW 23/24L
+;
+; Program oblicza cykliczny kod nadmiarowy podanego pliku 
+; przy podanym wielomianie (w ktorym najwyzszy stopien nie jest implikowany)
+; Przepraszam, ze kod nie nalezy do najpiekniejszych ale mamy rownoczesnie
+; ten projekt, projekt z PO, kolokwium z MD i nauke do egzaminu z MD 
+;
+; Bartosz Czechowski 
+;
 
 LAST_BYTE equ -1
 SYS_OPEN equ 2
@@ -27,6 +35,7 @@ NEWLINE equ 10
 ; +----------+------------+------------+-------------+
 ; | Size (B) | Big 1 (ms) | Big 2 (ms) | Medium (ms) |
 ; +----------+------------+------------+-------------+
+; |    65536 |        248 |        249 |          43 |
 ; |     4096 |        249 |        254 |          48 |
 ; |     2048 |        250 |        247 |          49 |
 ; |     1024 |        242 |        258 |          51 |
@@ -42,22 +51,24 @@ BIG_BUFFER_SIZE equ 4096
 
 
 section .bss
-    align 16
-    big_buffer resb 4096
-    big_buffer_ptr resq 1
-    big_buffer_actual_size resq 1
-    fd resq 1
+    align 16 ; can speed up access, i didnt measure any difference though
+    big_buffer resb BIG_BUFFER_SIZE
+    fd resq 1 ; file descriptor
     buffer resb BUFFER_SIZE ; used to flip a number due to the endian order
-    print_buffer resb 66
-    poly_length resb 1
-    ; Somewhat constant registers: 
-    ; (that is storing only one thing)
-    poly resq 1
-    data_counter resw 1 ; word - 2 bytes
-    data_len resw 1 ; word - 2 bytes
-    small_buffer resb 1 ; can be eliminated
+    print_buffer resb 66 ; used for printing out result
+    poly_length resb 1 ; length of the result polynomial
     segment_offset resd 1 ; doubleword - 4 bytes
     bytes_in_buffer resb 1 ; when hits 0 well have the reslt
+    ; Somewhat constant registers: 
+    ; (that is storing only one thing)
+    ; (can be treated as variables)
+    ; r15:  poly - quadword
+    ; r14w: data_counter resw - word
+    ; r13w: data_len resw 1 ; word - 2 bytes
+    ; r12b: small_buffer stores the last fetched byte (to avoid awkward index + 1 buffer accesses)
+    ; r11:  big_buffer_ptr index of the next unread byte in buffer
+    ; r10:  big_buffer_actual_size resq 1 ; how much data was loaded into buffer
+    ; TODO make sure all are properly initialazied 0 at start
     
 
 section .text
@@ -114,19 +125,16 @@ read_data_len:
     call update_big_buffer ; we force update big buffer
     ; maybe change it in the future for better performance
     lea rax, [big_buffer]
-    add rax, [big_buffer_ptr] ; currently 0 but maybe we wont force reload in the future
-    mov ax, word [rax]
-    mov word [data_len], ax
-    add qword [big_buffer_ptr], 2
+    mov r13w, word [rax] ; r13w - data_len
+    add r11, 2 ; r11 - big_buffer_ptr
 
-    ; if the segment has 0 data we immedietaly seek the next one
-    xor eax, eax
-    mov ax, word [data_len]
-    cmp ax, 0
+    ; if the segment has 0 data we immediately seek the next one
+    cmp r13w, 0 ; r13w - data_len
     je reading_offset
 
     xor eax, eax
-    mov word [data_counter], ax ; bytes read in curr segment - 0
+    ; r14w - data_counter
+    mov r14w, ax ; bytes read in curr segment - 0
 
     ret ; we return 0 because there are bytes in current segment
 
@@ -136,15 +144,12 @@ read_data_len:
 fetch_next_byte:
     call update_big_buffer_if_necessary
     lea rax, [big_buffer] ; rax := &big_buffer
-    add rax, [big_buffer_ptr] ; rax := &big_buffer + ptr
-    mov al, [rax] ; al := *(big_buffer+ptr)
-    mov byte [small_buffer], al
-    inc qword [big_buffer_ptr]
+    add rax, r11 ; rax := &big_buffer + big_buffer_ptr
+    mov r12b, [rax] ; small_buffer := *(big_buffer+ptr)
+    inc r11 ; big_buffer_ptr++
 
-    mov ax, word [data_counter]
-    inc ax
-    mov word [data_counter], ax ; data read in current segment increases
-    cmp ax, word [data_len]
+    inc r14w ; r14w - data_counter
+    cmp r14w, r13w ; r13w - data_len
     je reading_offset ; if read all data in current segment proceed to the next
     xor eax, eax ; otherwise there is more data in the current segment
     ret ; so we return 0
@@ -152,16 +157,16 @@ fetch_next_byte:
 reading_offset:
     call update_big_buffer_if_necessary
     lea rax, [big_buffer] ; rax := &big_buffer
-    add rax, [big_buffer_ptr] ; rax := &big_buffer + ptr
+    add rax, r11 ; rax := &big_buffer + big_buffer_ptr
     mov eax, [rax] ; ax := *(big_buffer+ptr)
     mov dword [segment_offset], eax
-    add qword [big_buffer_ptr], 4
+    add r11, 4 ; big_buffer_ptr
 
     movsxd rsi, dword [segment_offset]
 
-    ; rdx := total length of curr segment
+    ; rdx will be total length of curr segment
     xor edx, edx ; rdx := 0
-    mov dx, word [data_len] ; rdx := data_len
+    mov dx, r13w ; rdx := data_len
     add rdx, 6 ; rdx += 2 (length) + 4 (offset)
     ;checking if it points to itself
     add rsi, rdx
@@ -172,8 +177,9 @@ reading_offset:
 .moving_to_next_segment:
     ; we need to correct rsi to have the right offset
     sub rsi, rdx ; rsi := offset read (revert +6 change)
-    mov rax, [big_buffer_actual_size] ; rax := amount of bytes weve read into big buffer
-    sub rax, [big_buffer_ptr]  ; but havent read
+    mov rax, r10 ; rax := amount of bytes weve loaded into big buffer
+    sub rax, r11  ; but havent read
+    ; rax := big_buffer_actual_size - big_buffer_ptr
     sub rsi, rax ; so we need to move that much more to the beggining of the file
     
 
@@ -189,7 +195,7 @@ reading_offset:
     jmp read_data_len
     
 
-
+; setups data for xoring
 filling_initial_buffer:
     call read_data_len ; zeros rax
     ; r8 <- [7, 0]
@@ -202,14 +208,19 @@ filling_initial_buffer:
     je .after_loop
 .loop_body:
     call fetch_next_byte ; rax has to be unchanged until the xor loop
-    mov dl, byte [small_buffer] ; RDX!!
-    mov byte [buffer + r8], dl
+    mov byte [buffer + r8], r12b ; b[i] := small_buffer
     inc byte [bytes_in_buffer] ; new byte in buffer
     dec r8
     jmp .condition
 .after_loop:
     jmp xoring_loop
 
+; Registers:
+; r9        - used to perform the calculations
+; r8        - loop iterator [0, 7]
+; rbx (bl)  - used to store the next byte not stored in r9
+; rcx       - used to store rbx before shifting (why doesnt shld shift both?)
+; rax       - stores whether there are any more bytes
 xoring_loop:
     mov r9, qword [buffer]
 .loop_unprocessed_bits_condition:
@@ -221,7 +232,7 @@ xoring_loop:
     cmp rax, LAST_BYTE  ; make sure rax unchanged or move regs
     je .inner_loop_setup ; if no more data then we leave zero
     call fetch_next_byte
-    mov bl, byte [small_buffer]
+    mov bl, r12b
     shl rbx, SHIFT_FROM_THE_YOUNGEST_TO_THE_OLDEST_EIGHT_BITS ; bytes from small buffer now are the oldest in rbx
     inc byte [bytes_in_buffer]
 .inner_loop_setup:
@@ -230,8 +241,8 @@ xoring_loop:
     cmp r8, 8
     je .loop_unprocessed_bits_condition
 .inner_loop_body:
-    mov rcx, rbx
-    shl rbx, 1 ; ugly
+    mov rcx, rbx ; copy rbx
+    shl rbx, 1 ; and shift it
     shld r9, rcx, 1 ; we shift off the first bit and on the last
     ; now if the carry flag is set we popped a 1 from the left
     ; it corresponds to the implied highest degree of poly so we xor
@@ -239,7 +250,7 @@ xoring_loop:
     jc .can_proceed_with_xor
     jmp .inner_loop_lower_body
 .can_proceed_with_xor:
-    xor r9, qword [poly]
+    xor r9, r15 ; r15 = poly
 .inner_loop_lower_body:
     inc r8
     jmp .inner_loop_condition
@@ -247,9 +258,14 @@ xoring_loop:
     ret
 
 
+; Registers:
+; rax (al)  - checking current char
+; rdx       - pointer to the polynomial string
+; rcx       - loop iterator (and str_len)
 parse_poly:
+    xor r15, r15 ; poly = 0 by default
     mov rdx, [rsp + 32] ; polynomial string ptr
-    mov al, [rdx]              
+    mov al, [rdx]  ; str[0]
     test al, al ; if first character null raise error
     jz _not_closing_error
 
@@ -279,7 +295,7 @@ parse_poly:
     mov rax, 1
     shl rax, 63
     shr rax, cl ; turns on the rcx-th (cl-th since its <=64) bit
-    or qword [poly], rax
+    or r15, rax ; r15 = poly
     jmp .check_done
 .store_zero_bit:
     ; do nothing
@@ -289,13 +305,13 @@ parse_poly:
     jmp .process_char ; store prev char
 .done: 
     ret
-    ; TODO: parse polynomial
-    ; TODO: print result
-    ; allowing empty segments by checking directly after reading lenght - seems ok
 
 
-; assumes result in r9 
-; will go through the input string and now to end from there
+; Registers:
+; rcx (cl)  - result polynomial length
+; rsi       - pointer to result string
+; rdi       - iterator for string char loop
+; rbx       - used for processing current char
 print_poly_result:
     xor ecx, ecx 
     mov cl, byte[poly_length] ; rcx = poly_length (number of bits to write)
@@ -319,21 +335,26 @@ write_bits:
     ; following byte 0 by default
 
     mov rax, SYS_WRITE                     
-    mov rdx, rdi ; unusual order due to somwhat poor choice of registers...
+    mov rdx, rdi ; unusual order due to somewhat poor choice of registers...
     mov rdi, STDOUT                     
     lea rsi, [print_buffer]              
     syscall
     ret
 
+; checks if there if enough data buffered 
+; if not then request next batch by sys_read
 update_big_buffer_if_necessary:
-    mov rax, [big_buffer_ptr]
+    mov rax, r11 ; r11 - big_buffer_ptr
     add rax, 3 ; we want to make sure that always there are at least 4 bytes to read
-    cmp rax, [big_buffer_actual_size] ; so ptr+3 < size has to be true
+    cmp rax, r10 ; so big_buffer_actual_size+3 < size has to be true
     jae update_big_buffer_setting_cursor ; unsigned compare
     ret ; we have at least 4 more bytes buffered
+
+; reads next batch, but shifting the cursor first
+; so it begins with the unread bytes
 update_big_buffer_setting_cursor:
-    mov rsi, [big_buffer_actual_size]
-    sub rsi, [big_buffer_ptr]
+    mov rsi, r10 ; = big_buffer_size
+    sub rsi, r11 ; - big_buffer_ptr
     neg rsi
 
     mov rax, SYS_LSEEK
@@ -342,11 +363,22 @@ update_big_buffer_setting_cursor:
     mov rdx, LSEEK_CUR
     syscall
 
+; loads new data into buffer
 update_big_buffer:
+    mov rdx, BIG_BUFFER_SIZE
+    cmp dx, r13w ; r13w - data_len
+    jbe .reading_data
+    xor edx, edx ; if data_len < buffer size
+    mov dx, r13w ; well only fill with data_len + 4
+    add rdx, 4 ; (make sure always at least 4 bytes read to not mess up offset reading)
+    ; if this was called in read_data_len then we dont know the length of current segment yet
+    ; but we can assume they are roughly the same size and if they arent
+    ; it will quickly fix itself with the second request for data in the same segment
+.reading_data:
     mov rax, SYS_READ
     mov rdi, [fd]
     mov rsi, big_buffer
-    mov rdx, BIG_BUFFER_SIZE
+    ; rdx amount set above
     syscall 
 
     cmp rax, 0
@@ -354,10 +386,6 @@ update_big_buffer:
 
     ; syscall returns number of bytes read
     ; can be less than what we asked for
-    mov [big_buffer_actual_size], rax
-    mov qword [big_buffer_ptr], 0
+    mov r10, rax ; big_buffer_size = rax
+    mov r11, 0 ; big_buffer_ptr = 0
     ret
-
-; TODO error check jle
-; todo size of buffer
-; remove macro !!!
