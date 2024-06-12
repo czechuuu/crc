@@ -1,3 +1,6 @@
+%include "macro_print.asm"
+; remove macro !!!!
+
 LAST_BYTE equ -1
 SYS_OPEN equ 2
 READ_ONLY equ 0
@@ -14,6 +17,7 @@ LSEEK_CUR equ 1
 BUFFER_SIZE equ 8
 SHIFT_FROM_THE_YOUNGEST_TO_THE_OLDEST_EIGHT_BITS equ 56
 NEWLINE equ 10
+BIG_BUFFER_SIZE equ 4096
 
 
 section .bss
@@ -27,6 +31,9 @@ section .bss
     bytes_in_buffer resb 1 ; when hits 0 well have the reslt
     poly resq 1
     poly_length resb 1
+    big_buffer resb 4096
+    big_buffer_ptr resq 1
+    big_buffer_actual_size resq 1
     
 
     
@@ -75,8 +82,6 @@ _error:
     syscall
 _not_closing_error:
     ; Handle error (print error message and exit with code 1)
-    PRINT_STRING error_msg
-
     mov rax, SYS_EXIT             ; sys_exit
     mov rdi, 1              ; exit code 1
     syscall                 ; call kernel
@@ -84,14 +89,13 @@ _not_closing_error:
 
 ; reads following two bytes and saves them to data_len
 read_data_len:
-    mov rax, SYS_READ
-    mov rdi, [fd]
-    mov rsi, data_len
-    mov rdx, 2 ; length is a word - 2 bytes
-    syscall
-
-    cmp rax, 0
-    jl _error
+    call update_big_buffer ; we force update big buffer
+    ; maybe change it in the future for better performance
+    lea rax, [big_buffer]
+    add rax, [big_buffer_ptr] ; currently 0 but maybe we wont force reload in the future
+    mov ax, word [rax]
+    mov word [data_len], ax
+    add qword [big_buffer_ptr], 2
 
     ; if the segment has 0 data we immedietaly seek the next one
     xor eax, eax
@@ -108,15 +112,12 @@ read_data_len:
 ; if it was the last byte then rax is set to -1 = LAST_BYTE
 ; otherwise to 0
 fetch_next_byte:
-    ; small_buffer := curent byte
-    mov rax, SYS_READ
-    mov rdi, [fd]
-    mov rsi, small_buffer ; 
-    mov rdx, 1 ; process only one byte at once - endian order...
-    syscall
-
-    cmp rax, 0
-    jl _error
+    call update_big_buffer_if_necessary
+    lea rax, [big_buffer] ; rax := &big_buffer
+    add rax, [big_buffer_ptr] ; rax := &big_buffer + ptr
+    mov al, [rax] ; al := *(big_buffer+ptr)
+    mov byte [small_buffer], al
+    inc qword [big_buffer_ptr]
 
     mov ax, word [data_counter]
     inc ax
@@ -127,14 +128,12 @@ fetch_next_byte:
     ret ; so we return 0
 
 reading_offset:
-    mov rax, SYS_READ
-    mov rdi, [fd]
-    mov rsi, segment_offset
-    mov rdx, 4 ; offset is a 32bit U2 number
-    syscall 
-
-    cmp rax, 0
-    jl _error
+    call update_big_buffer_if_necessary
+    lea rax, [big_buffer] ; rax := &big_buffer
+    add rax, [big_buffer_ptr] ; rax := &big_buffer + ptr
+    mov eax, [rax] ; ax := *(big_buffer+ptr)
+    mov dword [segment_offset], eax
+    add qword [big_buffer_ptr], 4
 
     movsxd rsi, dword [segment_offset]
 
@@ -149,9 +148,16 @@ reading_offset:
     mov rax, LAST_BYTE ; no more data
     ret ; return LAST_BYTE
 .moving_to_next_segment:
+    ; we need to correct rsi to have the right offset
+    sub rsi, rdx ; rsi := offset read (revert +6 change)
+    mov rax, [big_buffer_actual_size] ; rax := amount of bytes weve read into big buffer
+    sub rax, [big_buffer_ptr]  ; but havent read
+    sub rsi, rax ; so we need to move that much more to the beggining of the file
+    
+
     mov rax, SYS_LSEEK
     mov rdi, [fd]
-    sub rsi, rdx ; rsi := offset
+    ; rsi set complicated so above
     mov rdx, LSEEK_CUR ; moving relative to current cursor 
     syscall
 
@@ -234,7 +240,7 @@ parse_poly:
     inc rcx           ; i++
     jmp .find_length          
 .process_string:
-    mov [poly_length], cl
+    mov byte [poly_length], cl
     cmp rcx, 64
     ja _not_closing_error ; polynomial too long
     dec rcx ; rcx now points to the last character of the string
@@ -269,7 +275,8 @@ parse_poly:
 ; assumes result in r9 
 ; will go through the input string and now to end from there
 print_poly_result:
-    mov rcx, [poly_length] ; rcx = poly_length (number of bits to write)
+    xor ecx, ecx 
+    mov cl, byte[poly_length] ; rcx = poly_length (number of bits to write)
     lea rsi, [print_buffer] ; rsi = address of buffer for printing result
     xor rdi, rdi ;  rdi = index in buffer
 
@@ -295,3 +302,30 @@ write_bits:
     lea rsi, [print_buffer]              
     syscall
     ret
+
+update_big_buffer_if_necessary:
+    mov rax, [big_buffer_ptr]
+    ; assuming ptr always non negative
+    ; big buffering instead of lseeks has too many edge cases
+    cmp rax, [big_buffer_actual_size]
+    jae update_big_buffer ; unsigned compare
+    ret ; if both comps failed ptr is within bounds of buffer
+update_big_buffer:
+    mov rax, SYS_READ
+    mov rdi, [fd]
+    mov rsi, big_buffer
+    mov rdx, BIG_BUFFER_SIZE
+    syscall 
+
+    cmp rax, 0
+    jle _error
+
+    ; syscall returns number of bytes read
+    ; can be less than what we asked for
+    mov [big_buffer_actual_size], rax
+    mov qword [big_buffer_ptr], 0
+    ret
+
+; TODO error check jle
+; todo size of buffer
+; remove macro !!!
