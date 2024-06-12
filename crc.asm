@@ -114,7 +114,6 @@ _error:
     mov rdi, [fd]
     syscall
 _not_closing_error:
-    ; Handle error (print error message and exit with code 1)
     mov rax, SYS_EXIT             ; sys_exit
     mov rdi, 1              ; exit code 1
     syscall                 ; call kernel
