@@ -1,4 +1,4 @@
-%include "macro_print.asm"
+;%include "macro_print.asm"
 ; remove macro !!!!
 
 LAST_BYTE equ -1
@@ -17,25 +17,47 @@ LSEEK_CUR equ 1
 BUFFER_SIZE equ 8
 SHIFT_FROM_THE_YOUNGEST_TO_THE_OLDEST_EIGHT_BITS equ 56
 NEWLINE equ 10
+
+; i chose 4kB since thats the standard frame size and seems most logical
+; but on the tests i conducted (somewhat poorly but nonetheless)
+; it seems like it doesnt make a difference past 512 B
+; but i don't have access to any truly massive tests
+; and it doesn't hurt to assume that on them the difference would be noticeable
+; (test times are all ao12)
+; +----------+------------+------------+-------------+
+; | Size (B) | Big 1 (ms) | Big 2 (ms) | Medium (ms) |
+; +----------+------------+------------+-------------+
+; |     4096 |        249 |        254 |          48 |
+; |     2048 |        250 |        247 |          49 |
+; |     1024 |        242 |        258 |          51 |
+; |      512 |        253 |        256 |          48 |
+; |      256 |        260 |        263 |          55 |
+; |      128 |        279 |        281 |          52 |
+; |       64 |        328 |        316 |          55 |
+; |       32 |        406 |        397 |          66 |
+; |       16 |        603 |        605 |          76 |
+; |        8 |       1170 |       1168 |         143 |
+; +----------+------------+------------+-------------+
 BIG_BUFFER_SIZE equ 4096
 
 
 section .bss
-    fd resq 1
-    buffer resb BUFFER_SIZE
-    small_buffer resb 1
-    print_buffer resb 66
-    data_counter resw 1 ; word - 2 bytes
-    data_len resw 1 ; word - 2 bytes
-    segment_offset resd 1 ; doubleword - 4 bytes
-    bytes_in_buffer resb 1 ; when hits 0 well have the reslt
-    poly resq 1
-    poly_length resb 1
+    align 16
     big_buffer resb 4096
     big_buffer_ptr resq 1
     big_buffer_actual_size resq 1
-    
-
+    fd resq 1
+    buffer resb BUFFER_SIZE ; used to flip a number due to the endian order
+    print_buffer resb 66
+    poly_length resb 1
+    ; Somewhat constant registers: 
+    ; (that is storing only one thing)
+    poly resq 1
+    data_counter resw 1 ; word - 2 bytes
+    data_len resw 1 ; word - 2 bytes
+    small_buffer resb 1 ; can be eliminated
+    segment_offset resd 1 ; doubleword - 4 bytes
+    bytes_in_buffer resb 1 ; when hits 0 well have the reslt
     
 
 section .text
@@ -162,7 +184,7 @@ reading_offset:
     syscall
 
     cmp rax, 0
-    jl _error
+    jl _error ;  offset can be 0 so only negative is an error
 
     jmp read_data_len
     
@@ -305,11 +327,21 @@ write_bits:
 
 update_big_buffer_if_necessary:
     mov rax, [big_buffer_ptr]
-    ; assuming ptr always non negative
-    ; big buffering instead of lseeks has too many edge cases
-    cmp rax, [big_buffer_actual_size]
-    jae update_big_buffer ; unsigned compare
-    ret ; if both comps failed ptr is within bounds of buffer
+    add rax, 3 ; we want to make sure that always there are at least 4 bytes to read
+    cmp rax, [big_buffer_actual_size] ; so ptr+3 < size has to be true
+    jae update_big_buffer_setting_cursor ; unsigned compare
+    ret ; we have at least 4 more bytes buffered
+update_big_buffer_setting_cursor:
+    mov rsi, [big_buffer_actual_size]
+    sub rsi, [big_buffer_ptr]
+    neg rsi
+
+    mov rax, SYS_LSEEK
+    mov rdi, [fd]
+    ; rsi set above
+    mov rdx, LSEEK_CUR
+    syscall
+
 update_big_buffer:
     mov rax, SYS_READ
     mov rdi, [fd]
